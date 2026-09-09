@@ -9,4 +9,5 @@ dependencies = [
     "pandas>=2.2",
     "requests>=2.32",
     "gunicorn>=23.0",
+    "statsmodels>=0.14",
 ]
