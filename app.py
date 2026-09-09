@@ -70,18 +70,44 @@ def load_coefficients():
 
 bike = load_bikes()
 coefficients = load_coefficients()
-NUMERIC_TERMS = [t for t in coefficients if t != "Intercept" and not t.startswith("day_")]
 YEAR_MIN, YEAR_MAX = int(bike["year"].min()), int(bike["year"].max())
+VISIBILITY_FALLBACK = round(bike["visibility"].mean(), 1)
+PRICE_CHANGE_DATE = pd.to_datetime("2022-09-12", utc=True)
+
+# Model: bikes_hired ~ temp + precip + C(season_name) + C(day_of_week)
+#        + windspeed + visibility + solarenergy + temp*precip + post_price_change
+NUMERIC_TERMS = ["temp", "precip", "windspeed", "visibility", "solarenergy"]
+
+
+def season_of(month: int) -> str:
+    if month in (12, 1, 2):
+        return "Winter"
+    if month in (3, 4, 5):
+        return "Spring"
+    if month in (6, 7, 8):
+        return "Summer"
+    return "Autumn"
 
 
 def predict_hires(weather: pd.DataFrame) -> pd.DataFrame:
     """Apply the exported linear model to a weather DataFrame (date, day_of_week, ...)."""
     out = weather.copy()
+    if out["visibility"].isna().any():
+        out["visibility"] = out["visibility"].fillna(VISIBILITY_FALLBACK)
+
+    date_utc = out["date"].dt.tz_localize("UTC") if out["date"].dt.tz is None else out["date"]
+    out["post_price_change"] = (date_utc >= PRICE_CHANGE_DATE).astype(int)
+    out["season_name"] = out["date"].dt.month.map(season_of)
+
     pred = coefficients["Intercept"]
     for term in NUMERIC_TERMS:
         pred = pred + coefficients[term] * out[term]
-    day_effect = out["day_of_week"].map(lambda d: coefficients.get(f"day_{d}", 0.0))
-    out["predicted_hires"] = (pred + day_effect).round(0)
+    pred = pred + coefficients["post_price_change"] * out["post_price_change"]
+    pred = pred + coefficients["temp_precip"] * out["temp"] * out["precip"]
+    pred = pred + out["day_of_week"].map(lambda d: coefficients.get(f"day_{d}", 0.0))
+    pred = pred + out["season_name"].map(lambda s: coefficients.get(f"season_{s}", 0.0))
+
+    out["predicted_hires"] = pred.round(0)
     return out
 
 
@@ -111,7 +137,7 @@ def stat_tile(label, value, sublabel=None):
     )
 
 
-def prediction_section(title, df):
+def prediction_section(title, df, visibility_is_estimated=False):
     if df is None:
         return html.Div("Weather data unavailable right now — try refreshing.", className="error-note")
 
@@ -139,7 +165,13 @@ def prediction_section(title, df):
     table = html.Table(
         [
             html.Tr(
-                [html.Th(c) for c in ["Date", "Day", "Temp (°C)", "Humidity", "Precip", "Wind", "Cloud", "Predicted hires"]]
+                [
+                    html.Th(c)
+                    for c in [
+                        "Date", "Day", "Season", "Temp (°C)", "Precip", "Wind",
+                        "Visibility", "Solar energy", "Predicted hires",
+                    ]
+                ]
             )
         ]
         + [
@@ -147,11 +179,12 @@ def prediction_section(title, df):
                 [
                     html.Td(row["date"].strftime("%Y-%m-%d")),
                     html.Td(row["day_of_week"]),
+                    html.Td(row["season_name"]),
                     html.Td(f"{row['temp']:.1f}"),
-                    html.Td(f"{row['humidity']:.0f}%"),
                     html.Td(f"{row['precip']:.1f} mm"),
                     html.Td(f"{row['windspeed']:.1f} km/h"),
-                    html.Td(f"{row['cloudcover']:.0f}%"),
+                    html.Td(f"{row['visibility']:.1f} km" + (" *" if visibility_is_estimated else "")),
+                    html.Td(f"{row['solarenergy']:.1f} MJ/m²"),
                     html.Td(f"{row['predicted_hires']:,.0f}"),
                 ]
             )
@@ -159,7 +192,19 @@ def prediction_section(title, df):
         ],
         className="pred-table",
     )
-    return html.Div([html.H4(title), kpi_row, dcc.Graph(figure=fig, config={"displayModeBar": False}), table], className="card")
+    note = (
+        html.P(
+            f"* Open-Meteo's historical archive has no visibility record, so this uses the "
+            f"training data's average ({VISIBILITY_FALLBACK} km) instead.",
+            className="table-note",
+        )
+        if visibility_is_estimated
+        else None
+    )
+    return html.Div(
+        [html.H4(title), kpi_row, dcc.Graph(figure=fig, config={"displayModeBar": False}), table, note],
+        className="card",
+    )
 
 
 jan_pred, forecast_pred, fetch_error = fetch_predictions()
@@ -226,7 +271,7 @@ predict_tab = html.Div(
             className="subtitle",
         ),
         html.Div("Could not reach Open-Meteo: " + fetch_error, className="error-note") if fetch_error else None,
-        prediction_section("First week of January 2026 (historical weather)", jan_pred),
+        prediction_section("First week of January 2026 (historical weather)", jan_pred, visibility_is_estimated=True),
         prediction_section("Next 5 days (live forecast)", forecast_pred),
     ]
 )
