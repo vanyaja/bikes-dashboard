@@ -1,0 +1,12 @@
+[project]
+name = "bikes-dashboard"
+version = "0.1.0"
+description = "London Bikes demand explorer and forecast dashboard"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "dash>=4.4.0,<5",
+    "plotly>=5.24",
+    "pandas>=2.2",
+    "requests>=2.32",
+    "gunicorn>=23.0",
+]
